@@ -5,7 +5,7 @@
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
  * copyright notice and this permission notice appear in all copies.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
  * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
  * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
@@ -23,17 +23,6 @@
 
 #if defined(_MSC_VER)
 # define restrict __restrict
-#endif
-
-#if defined(_WIN32)
-# define WIN32_LEAN_AND_MEAN 1
-# include <windows.h>
-#else
-# define _POSIX_C_SOURCE 1
-# include <fcntl.h>
-# include <sys/mman.h>
-# include <sys/stat.h>
-# include <unistd.h>
 #endif
 
 #include "schrift.h"
@@ -117,7 +106,7 @@ struct SFT_Font
 	HANDLE         mapping;
 #endif
 	int            source;
-	
+
 	uint_least16_t unitsPerEm;
 	int_least16_t  locaFormat;
 	uint_least16_t numLongHmtx;
@@ -125,12 +114,10 @@ struct SFT_Font
 
 /* function declarations */
 /* generic utility functions */
-static void *reallocarray(void *optr, size_t nmemb, size_t size);
+static void *sft_reallocarray(void *optr, size_t nmemb, size_t size);
 static inline int fast_floor(double x);
 static inline int fast_ceil (double x);
-/* file loading */
-static int  map_file  (SFT_Font *font, const char *filename);
-static void unmap_file(SFT_Font *font);
+
 static int  init_font (SFT_Font *font);
 /* simple mathematical operations */
 static Point midpoint(Point a, Point b);
@@ -210,32 +197,10 @@ sft_loadmem(const void *mem, size_t size)
 	return font;
 }
 
-/* Loads a font from the file system. To do so, it has to map the entire font into memory. */
-SFT_Font *
-sft_loadfile(char const *filename)
-{
-	SFT_Font *font;
-	if (!(font = calloc(1, sizeof *font))) {
-		return NULL;
-	}
-	if (map_file(font, filename) < 0) {
-		free(font);
-		return NULL;
-	}
-	if (init_font(font) < 0) {
-		sft_freefont(font);
-		return NULL;
-	}
-	return font;
-}
-
 void
 sft_freefont(SFT_Font *font)
 {
 	if (!font) return;
-	/* Only unmap if we mapped it ourselves. */
-	if (font->source == SrcMapping)
-		unmap_file(font);
 	free(font);
 }
 
@@ -335,7 +300,7 @@ sft_kerning(const SFT *sft, SFT_Glyph leftGlyph, SFT_Glyph rightGlyph,
 			key[3] =  rightGlyph & 0xFF;
 			if ((match = bsearch(key, sft->font->memory + offset,
 				numPairs, 6, cmpu32)) != NULL) {
-				
+
 				value = geti16(sft->font, (uint_fast32_t) ((uint8_t *) match - sft->font->memory + 4));
 				if (flags & CROSS_STREAM_KERNING) {
 					kerning->yShift += value;
@@ -384,7 +349,7 @@ sft_render(const SFT *sft, SFT_Glyph glyph, SFT_Image image)
 		transform[3] = +sft->yScale / sft->font->unitsPerEm;
 		transform[5] = sft->yOffset - bbox[1];
 	}
-	
+
 	memset(&outl, 0, sizeof outl);
 	if (init_outline(&outl) < 0)
 		goto failure;
@@ -410,7 +375,7 @@ failure:
  * A wrapper for realloc() that takes two size args like calloc().
  * Useful because it eliminates common integer overflow bugs. */
 static void *
-reallocarray(void *optr, size_t nmemb, size_t size)
+sft_reallocarray(void *optr, size_t nmemb, size_t size)
 {
 	if ((nmemb >= MUL_NO_OVERFLOW || size >= MUL_NO_OVERFLOW) &&
 	    nmemb > 0 && SIZE_MAX / nmemb < size) {
@@ -435,94 +400,6 @@ fast_ceil(double x)
 	return i + (i < x);
 }
 
-#if defined(_WIN32)
-
-static int
-map_file(SFT_Font *font, const char *filename)
-{
-	HANDLE file;
-	DWORD high, low;
-
-	font->mapping = NULL;
-	font->memory  = NULL;
-
-	file = CreateFileA(filename, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-	if (file == INVALID_HANDLE_VALUE) {
-		return -1;
-	}
-
-	low = GetFileSize(file, &high);
-	if (low == INVALID_FILE_SIZE) {
-		CloseHandle(file);
-		return -1;
-	}
-
-	font->size = (size_t)high << (8 * sizeof(DWORD)) | low;
-
-	font->mapping = CreateFileMapping(file, NULL, PAGE_READONLY, high, low, NULL);
-	if (!font->mapping) {
-		CloseHandle(file);
-		return -1;
-	}
-
-	CloseHandle(file);
-
-	font->memory = MapViewOfFile(font->mapping, FILE_MAP_READ, 0, 0, 0);
-	if (!font->memory) {
-		CloseHandle(font->mapping);
-		font->mapping = NULL;
-		return -1;
-	}
-
-	return 0;
-}
-
-static void
-unmap_file(SFT_Font *font)
-{
-	if (font->memory) {
-		UnmapViewOfFile(font->memory);
-		font->memory = NULL;
-	}
-	if (font->mapping) {
-		CloseHandle(font->mapping);
-		font->mapping = NULL;
-	}
-}
-
-#else
-
-static int
-map_file(SFT_Font *font, const char *filename)
-{
-	struct stat info;
-	int fd;
-	font->memory = MAP_FAILED;
-	font->size   = 0;
-	font->source = SrcMapping;
-	if ((fd = open(filename, O_RDONLY)) < 0) {
-		return -1;
-	}
-	if (fstat(fd, &info) < 0) {
-		close(fd);
-		return -1;
-	}
-	/* FIXME do some basic validation on info.st_size maybe - it is signed for example, so it *could* be negative .. */
-	font->memory = mmap(NULL, (size_t) info.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-	font->size   = (uint_fast32_t) info.st_size;
-	close(fd);
-	return font->memory == MAP_FAILED ? -1 : 0;
-}
-
-static void
-unmap_file(SFT_Font *font)
-{
-	assert(font->memory != MAP_FAILED);
-	munmap((void *) font->memory, font->size);
-}
-
-#endif
-
 static int
 init_font(SFT_Font *font)
 {
@@ -541,7 +418,7 @@ init_font(SFT_Font *font)
 		return -1;
 	font->unitsPerEm = getu16(font, head + 18);
 	font->locaFormat = geti16(font, head + 50);
-	
+
 	if (gettable(font, "hhea", &hhea) < 0)
 		return -1;
 	if (!is_safe_offset(font, hhea, 36))
@@ -636,7 +513,7 @@ grow_points(Outline *outl)
 	if (outl->capPoints > UINT16_MAX / 2)
 		return -1;
 	cap = (uint_fast16_t) (2U * outl->capPoints);
-	if (!(mem = reallocarray(outl->points, cap, sizeof *outl->points)))
+	if (!(mem = sft_reallocarray(outl->points, cap, sizeof *outl->points)))
 		return -1;
 	outl->capPoints = (uint_least16_t) cap;
 	outl->points    = mem;
@@ -652,7 +529,7 @@ grow_curves(Outline *outl)
 	if (outl->capCurves > UINT16_MAX / 2)
 		return -1;
 	cap = (uint_fast16_t) (2U * outl->capCurves);
-	if (!(mem = reallocarray(outl->curves, cap, sizeof *outl->curves)))
+	if (!(mem = sft_reallocarray(outl->curves, cap, sizeof *outl->curves)))
 		return -1;
 	outl->capCurves = (uint_least16_t) cap;
 	outl->curves    = mem;
@@ -668,7 +545,7 @@ grow_lines(Outline *outl)
 	if (outl->capLines > UINT16_MAX / 2)
 		return -1;
 	cap = (uint_fast16_t) (2U * outl->capLines);
-	if (!(mem = reallocarray(outl->lines, cap, sizeof *outl->lines)))
+	if (!(mem = sft_reallocarray(outl->lines, cap, sizeof *outl->lines)))
 		return -1;
 	outl->capLines = (uint_least16_t) cap;
 	outl->lines    = mem;
@@ -736,7 +613,7 @@ getu16(SFT_Font *font, uint_fast32_t offset)
 {
 	assert(offset + 2 <= font->size);
 	const uint8_t *base = font->memory + offset;
-	uint_least16_t b1 = base[0], b0 = base[1]; 
+	uint_least16_t b1 = base[0], b0 = base[1];
 	return (uint_least16_t) (b1 << 8 | b0);
 }
 
@@ -751,7 +628,7 @@ getu32(SFT_Font *font, uint_fast32_t offset)
 {
 	assert(offset + 4 <= font->size);
 	const uint8_t *base = font->memory + offset;
-	uint_least32_t b3 = base[0], b2 = base[1], b1 = base[2], b0 = base[3]; 
+	uint_least32_t b3 = base[0], b2 = base[1], b1 = base[2], b0 = base[3];
 	return (uint_least32_t) (b3 << 24 | b2 << 16 | b1 << 8 | b0);
 }
 
@@ -890,7 +767,7 @@ glyph_id(SFT_Font *font, SFT_UChar charCode, SFT_Glyph *glyph)
 	uint_fast32_t cmap, entry, table;
 	unsigned int idx, numEntries;
 	int type, format;
-	
+
 	*glyph = 0;
 
 	if (gettable(font, "cmap", &cmap) < 0)
@@ -966,12 +843,12 @@ hor_metrics(SFT_Font *font, SFT_Glyph glyph, int *advanceWidth, int *leftSideBea
 		boundary = hmtx + 4U * (uint_fast32_t) font->numLongHmtx;
 		if (boundary < 4)
 			return -1;
-		
+
 		offset = boundary - 4;
 		if (!is_safe_offset(font, offset, 4))
 			return -1;
 		*advanceWidth = getu16(font, offset);
-		
+
 		offset = boundary + 2 * (glyph - font->numLongHmtx);
 		if (!is_safe_offset(font, offset, 2))
 			return -1;
@@ -1020,7 +897,7 @@ outline_offset(SFT_Font *font, SFT_Glyph glyph, uint_fast32_t *offset)
 
 		if (!is_safe_offset(font, base, 4))
 			return -1;
-		
+
 		this = 2U * (uint_fast32_t) getu16(font, base);
 		next = 2U * (uint_fast32_t) getu16(font, base + 2);
 	} else {
@@ -1212,7 +1089,7 @@ simple_outline(SFT_Font *font, uint_fast32_t offset, unsigned int numContours, O
 		if (grow_points(outl) < 0)
 			goto failure;
 	}
-	
+
 	STACK_ALLOC(endPts, uint_fast16_t, 16, numContours);
 	if (endPts == NULL)
 		goto failure;
@@ -1440,7 +1317,7 @@ draw_line(Raster buf, Point origin, Point goal)
 	if (!dir.y) {
 		return;
 	}
-	
+
 	crossingIncr.x = dir.x ? fabs(1.0 / delta.x) : 1.0;
 	crossingIncr.y = fabs(1.0 / delta.y);
 
@@ -1538,7 +1415,7 @@ render_outline(Outline *outl, double transform[6], SFT_Image image)
 	Cell *cells = NULL;
 	Raster buf;
 	unsigned int numPixels;
-	
+
 	numPixels = (unsigned int) image.width * (unsigned int) image.height;
 
 	STACK_ALLOC(cells, Cell, 128 * 128, numPixels);
