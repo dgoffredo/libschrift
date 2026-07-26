@@ -5,7 +5,7 @@
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
  * copyright notice and this permission notice appear in all copies.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
  * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
  * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
@@ -77,7 +77,6 @@ struct SFT_Image
 const char *sft_version(void);
 
 SFT_Font *sft_loadmem (const void *mem, size_t size);
-SFT_Font *sft_loadfile(const char *filename);
 void      sft_freefont(SFT_Font *font);
 
 int sft_lmetrics(const SFT *sft, SFT_LMetrics *metrics);
